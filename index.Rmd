@@ -1,0 +1,282 @@
+---
+title: "Trabalho Final D6"
+author: "Celso  Mattheus C. Silva"
+date: "28 de outubro de 2018"
+output: ioslides_presentation
+runtime: shiny
+---
+
+<!-- 
+  1. Fazer versionamento do projeto para o Github (https://github.com/matth3us/enapd6.git)
+  2. Por em GitHub Pages
+  
+  http://nickstrayer.me/RMarkdown_Sites_tutorial/
+  https://www.emilyzabor.com/tutorials/rmarkdown_websites_tutorial.html#r_markdown_website_basics
+
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(ggplot2)
+library(RColorBrewer)
+library(shiny)
+library(lubridate)
+```
+
+## Objeto
+O objetivo da pesquisa é explorar os dados para analisar O impacto de cancelamentos e no-shows ( _não comparecimentos_) sobre o faturamento de um salão de beleza.
+
+## Objetivos 
+- visualizar a distribuição das reservas por status no tempo (realizadas, canceladas, no shows e programadas)
+- visualizar a distribuição de gastos entre clientes
+- visualizar o faturamento dentro do período levantado
+
+## Contexto
+No-shows são tão custosos para serviços de beleza quanto são para empresas aéreas e hospitais. Eles aumentam os custos e o tempo de espera dos outros clientes. Como tal, compreender as características que apontam potencial no-show, permitindo estabelecer ações de contingência, representam uma economia potencial considerável de dinheiro e tempo.
+
+## Método
+A base de dados escolhida para o trabalho final se chama "Hair Salon No-Show Dataset", disponível no [Kaggle](https://www.kaggle.com/frederickferguson/hair-salon-no-show-data-set/home). O objetivo dela é permitir o treino de algoritmos de aprendizado de máquina para a identificação de no-shows ( _não comparecimentos_ )num cabelereiro. 
+
+A base de dados é formada por dados reais de um cabeleireiro de Toronto, compreendendo o período de março a julho de 2018. Ele cobre tanto dados de serviços efetivamente prestados nesse período (incluindo cancelamentos e no-shows) como também serviços agendados nesse período para datas posteriores a essas. 
+
+## Método
+
+Os dados contém informações sobre a reserva em si, incluindo quanto foi gasto em serviços e produtos, um código anonimizado para os clientes, informações sobre que funcionário prestou o serviço, qual funcionário fez o agendamento, dentre outros. Para nossa análise exploratória dos dados, nos concentraremos apenas nos valores gastos e no perfil dos clientes quanto a gasto e comparecimento.
+
+## Método
+
+As tabelas estavam divididas entre diversas tabelas: uma para no-show, outra para cancelamento, uma com os recibos das reservas efetuadas e outra com as reservas programadas. Além disso, haviam tabelas separadas para os produtos e serviços disponíveis para venda, e seus preços. 
+Juntamos tudo em um único _data frame_ de reservas e seus respectivos status, com o valor gasto nos produtos e serviços para as reservas efetuadas, com o cuidado de filtrar das reservas agendadas aquelas que já tinham sido efetuadas. Toda essa operação está disponível no script 'wrangl.R'.
+
+## Status de Reservas
+```{r}
+#script R com limpeza e união dos dados baixados a partir do Kaggle
+#teve que ser repetido em cada um dos chuncks, para o R Markdown rodar...
+source('wrangl.R')
+
+shinyApp(
+  ui <- fluidPage(
+    sidebarLayout(
+      mainPanel(
+        plotOutput(outputId = 'statusCliente')
+      ),
+      sidebarPanel(
+        dateRangeInput(
+          'dateStatus', 
+          'Período de tempo:',
+          start = '2018-03-14',
+          end = '2019-02-15',
+          format = 'dd/mm/yy'
+        ),
+        
+        tags$p('Dados de status disponíveis entre 14 de março de 2018 e 15 de fevereiro de 2019.')
+      )
+    )
+  ),
+  
+  server <- function(input, output){
+          colors <- brewer.pal(4, 'Spectral')
+          #limpeza e junção dos dados de percentual de cada um dos status de reserva, por cliente
+          #os dados da tabela "future bookings" incluíam reservas que já haviam sido realizadas; esses dados tiveram que ser retirados;
+          #essa limpeza deveria ter sido feita no Wrangl.R, mas só foi notada quando se criou o ggplot
+          
+          dataStatus <- bookings %>% 
+                        mutate(Date = as.Date(Date)) %>%   
+                        filter(!(Date < '2018-08-01' & Status == 'future'))
+          
+          dataTemp <- dataStatus %>% 
+                        group_by(Date) %>% 
+                        summarise(total = n())
+          
+          dataStatus <- dataStatus %>% 
+                          group_by(Date, Status) %>% 
+                          summarise(count = n()) %>% 
+                          left_join(dataTemp, by = 'Date') %>% 
+                          mutate(
+                            perc = count/total, 
+                            total = 1,
+                            count = NULL
+                          )
+        
+          dados <- reactive({
+            dataStatus %>% filter(Date >= input$dateStatus[1] & Date <= input$dateStatus[2])
+          })
+          
+          output$statusCliente = renderPlot({
+              ggplot(dados(), aes(x=Date, y=perc, fill = Status)) + 
+                geom_col() + 
+                theme_minimal()+
+                scale_fill_manual(values =c(colors[1], colors[3], colors[2], colors[4]))
+              })
+        
+  }
+)
+```
+
+## Reservas por cliente
+```{r}
+source('wrangl.R')
+booksDates <- bookings %>% 
+                mutate(Date = as.Date(Date)) %>% 
+                filter(!(Date < '2018-08-01' & Status == 'future'))
+
+tempdata <- booksDates %>% group_by(Client, Status) %>% summarise(Booked = n())
+valMax <- max(tempdata$Booked)
+
+
+shinyApp(
+  ui <- fluidPage(
+    sidebarLayout(
+      mainPanel(
+        plotOutput(outputId = 'reservas')
+      ),
+      sidebarPanel(
+        sliderInput(
+          inputId = 'slider',
+          label = 'Número mínimo de reservas',
+          min = 0,
+          max = valMax,
+          value = 0,
+          round = TRUE,
+          step = 1
+        )
+      )
+    )
+  ),
+  
+  server <- function(input, output){
+    
+    output$reservas <- renderPlot(
+      ggplot(reservas(), aes(x = Client, y = Booked, fill = Status, stat = 'identity')) + geom_col() + theme_minimal() + scale_fill_brewer(palette="Spectral")
+    )
+    
+    reservas <- reactive({
+      #criação de dataframe reativo de número total de reservas por cliente, com a informação do status registrado de cada reserva
+      booksDates %>% 
+        group_by(Client) %>% 
+        summarise(Booked_Client = n()) %>%
+        left_join(tempdata) %>%  
+        filter(Booked_Client >= input$slider) %>% 
+        mutate(Client = reorder(Client, -Booked_Client))
+      })
+    
+  }
+)
+```
+
+
+
+## Gastos por cliente
+```{r}
+source('wrangl.R')
+
+#Dataframe com o valor total gasto por cliente
+dataSpent <- bookings %>% 
+              filter(!is.na(Net.amount)) %>% 
+              mutate(
+                Date = as.Date(Date),
+                Client = as.factor(Client),
+                Status = as.factor(Status)
+              ) %>% 
+              group_by(Client) %>% 
+              summarise(spent = round(sum(Net.amount), digits = 2))  
+
+#Determinação do máximo valor gasto, para usar no slider do app Shiny
+valMax <- max(dataSpent$spent)
+
+
+shinyApp(
+  ui <- fluidPage(
+    sidebarLayout(
+      mainPanel(
+        plotOutput(outputId = 'gasto')
+      ),
+      sidebarPanel(
+        sliderInput(
+          inputId = 'slider',
+          label = 'Valor mínimo gasto por cliente: ',
+          min = 0,
+          max = valMax,
+          value = 0,
+          round = TRUE,
+          step = 0.1,
+          pre = 'R$ '
+        )
+      )
+    )
+  ),
+  
+  server <- function(input, output){
+    
+    output$gasto <- renderPlot(
+      ggplot(
+        valores(), aes(x = Client, y = spent)) + geom_col(fill = brewer.pal(4, 'Spectral')[3]) + theme_minimal()
+    )
+    
+    valores <- reactive({
+      dataSpent %>% 
+        filter(spent >= input$slider) %>% 
+        mutate(Client = reorder(Client, -spent))
+      })
+    
+  }
+)
+```
+
+
+## Faturamento no período levantado
+```{r}
+source('wrangl.R')
+
+shinyApp(
+  ui <- fluidPage(
+    sidebarLayout(
+      mainPanel(
+        plotOutput(outputId = 'faturamento')
+      ),
+      sidebarPanel(
+        dateRangeInput(
+          'dateFatur', 
+          'Período de tempo:',
+          start = '2018-03-14',
+          end = '2018-07-29',
+          format = 'dd/mm/yy'
+        ),
+        
+        tags$p('Dados de faturamento disponíveis entre 14 de março de 2018 e 29 de julho de 2018. ')
+      )
+    )
+  ),
+  
+  server <- function(input, output){
+    #criação de dataframe reativo de faturamento total por data
+    datas <- reactive({
+      bookings %>% 
+                    filter(!is.na(Net.amount)) %>% 
+                    group_by(Date) %>%
+                    summarise(faturamento = round(sum(Net.amount), digits = 2)) %>% 
+                    filter(Date >= input$dateFatur[1] & Date <= input$dateFatur[2])
+    })  
+    
+      output$faturamento = renderPlot({
+             ggplot(datas(), aes(x=Date, y=faturamento)) + geom_col(fill = brewer.pal(4, 'Spectral')[3]) + theme_minimal()
+          })
+  }
+)
+```
+
+
+## Conclusões dos status de reservas
+Dos dados de status, depreendemos que um certo nível de cancelamentos e _no shows_ são recorrentespraticamente todos os dias. Os _no shows_ não são tão frequentes quanto os cancelamentos, o que é um dado positivo, posto que no cancelamento há a possibilidade de remarcação. Ainda assim, há alguns dias em que o _no show_ são inusualmente frequentes, que deveriam ser analisados de mais perto. 
+
+## Conclusões dos clientes e do faturamento
+Tanto nas reservas por cliente quanto no faturamento por cliente, percebemos que há uma distribuição de cauda longa, o que significa que há alguns clientes mais importantes para o salão, cujo comportamento deveria ser analisado mais de perto. Ademais, na distribuição de resevas, visualizamos que há perfis; há clientes que preferem cancelar a dar no show, e há aqueles que não parecem ter tanto pudor. Uma possível análise futura interessante seria cruzar os dados numéricos de número de reservas por status versus o faturamento trazido pelo cliente. 
+
+Por fim, no faturamento total do período levantado, percebemos uma leve tendência de alta, com um pico pouco usual na primeira semana de junho. Seria interessante agregar mais dados para saber se isso representa um movimento sazonal, ou se há relevância; e se houver, qual a conexão com o comportamento dos clientes. 
+
+
+
+
+
